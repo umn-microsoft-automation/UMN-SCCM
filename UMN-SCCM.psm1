@@ -328,9 +328,7 @@ function New-ComputerVariablesSCCM
 
         .PARAMETER sitecode
             SCCM Site Code
-        
-        .PARAMETER smBiosGuid
-            An additional param to narrow down the computer object
+
         .EXAMPLE
             Example of how to use this cmdlet
     #>
@@ -363,8 +361,8 @@ function New-ComputerVariablesSCCM
         try
         {
             $machineSettings = [WMIClass]"\\$siteserver\$namespace`:SMS_MachineSettings"
-            if ($smBiosGUID){$ResourceID = (Get-WmiObject -ComputerName $siteserver -Namespace $namespace -Query "SELECT * FROM SMS_R_System where Name='$computer' AND SMBIOSGUID='$smBiosGUID'").ResourceID}
-            else{$ResourceID = (Get-WmiObject -ComputerName $siteserver -Namespace $namespace -Query "SELECT * FROM SMS_R_System where Name='$computer'").ResourceID}
+            $ResourceID = (Get-WmiObject -ComputerName $siteserver -Namespace $namespace -Query "SELECT * FROM SMS_R_System where Name='$computer'").ResourceID
+            if ($ResourceID.Count -ne 1){Throw "SCCM returned more/less that one record for $computer : $($ResourceID.Count) records" }
             $object =  $machineSettings.CreateInstance()
             $object.psbase.properties["ResourceID"].value = $ResourceID[0]
             $object.psbase.properties["SourceSite"].value = $SiteCode
