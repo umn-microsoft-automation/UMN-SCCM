@@ -122,6 +122,99 @@ function Get-PendingReboot {
 	}
 }
 
+function Import-ComputerObjectSCCM
+{
+    <#
+        .Synopsis
+            Add computer object to sccm, add to a collection WMI only
+        .DESCRIPTION
+            Add computer object to sccm, add to a collection and waits to return until the device is in the collection
+            Uses direct add and accepts smsbiosGuid or Mac Address.
+    
+        .PARAMETER computer
+            Name of computer object to be added
+
+        .PARAMETER siteserver
+            FQDN of the site server
+
+        .PARAMETER smBiosGuid
+            If the computer is a vm from VMWARE use Get-SMBiosGuidVmware from our module UMN-VMWare to get the UUID and convert it to smsbiosguild
+
+        .PARAMETER macAddress
+            If you don't have the smasbiosguild, you can use the mac address
+        
+        .PARAMETER CollectionName
+            Device Collection to add the computer object to.
+
+        .PARAMETER sitecode
+            SCCM Site Code
+
+        .EXAMPLE
+            Import-ComputerObjectSCCM -computer $computer -smBiosGUID $smBiosGUID -siteserver "siteserver.mysite.org" - sitecode "Site"
+    #>
+
+    [CmdletBinding()]
+    Param
+    (
+        [ValidateNotNullOrEmpty()]
+        [string]$computer,
+
+        [ValidateNotNullOrEmpty()]
+        [string] $siteserver,
+
+        [Parameter(ParameterSetName='smbios')]
+        [string]$smBiosGUID,
+
+        [Parameter(ParameterSetName='mac')][ValidatePattern("([a-zA-Z0-9]{2}:){5}[a-zA-Z0-9]{2}")]
+        [string]$macAddress,
+
+        [ValidateNotNullOrEmpty()]
+        [string]$CollectionName,
+
+        [ValidateNotNullOrEmpty()]
+        [string]$siteCode
+
+    )
+
+    Begin
+    {
+        $namespace = "root\sms\site_$siteCode"
+    }
+    Process
+    {
+        # validate Collection name
+        if ((Get-WmiObject -Query "SELECT * FROM SMS_Collection WHERE CollectionType = 2 AND Name='$CollectionName'" -ComputerName $siteserver -Namespace $namespace) -eq $null){throw "Error -- unable to find collection"}
+        ## validate device doesn't already exist, we don't want to over-write
+        if ((Get-WmiObject -Query "SELECT * FROM SMS_R_System WHERE Name = '$computer'" -ComputerName $siteserver -Namespace $namespace) -ne $null){throw "machine already exits in sccm"}
+
+        $CollectionQuery = Get-WmiObject -Namespace $namespace -Class 'SMS_Collection' -Filter "Name='$CollectionName'" -ComputerName $siteserver
+
+        # New computer account information
+        $WMIConnection = ([WMIClass]"\\$siteserver\$namespace`:SMS_Site")
+        $NewEntry = $WMIConnection.psbase.GetMethodParameters("ImportMachineEntry")
+        if ($smBiosGUID){$NewEntry.SMBIOSGUID = $smBiosGUID}
+        else{$NewEntry.MACAddress = $macAddress}            
+        $NewEntry.NetbiosName = $computer
+        $NewEntry.OverwriteExistingRecord = $True
+        $Resource = $WMIConnection.psbase.InvokeMethod("ImportMachineEntry",$NewEntry,$null)
+
+        #Create the Direct MemberShip Rule
+        $NewRule = ([WMIClass]"\\$siteserver\$namespace`:SMS_CollectionRuleDirect").CreateInstance()
+        $NewRule.ResourceClassName = "SMS_R_SYSTEM"
+        $NewRule.ResourceID = $Resource.ResourceID
+        $NewRule.Rulename = $computer
+
+        #Add the newly created machine to collection
+        $null = $CollectionQuery.AddMemberShipRule($NewRule)
+
+        return $Resource
+        
+    }
+    End
+    {
+    }
+}
+
 function New-ComputerObjectSCCM
 {
     <#
@@ -178,34 +271,41 @@ function New-ComputerObjectSCCM
 
     Begin
     {
-        Push-Location
-        Import-Module "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\ConfigurationManager.psd1" -Force
-        $location = $sitecode+":"
-        set-location $location # see wiki about creating the PS-Drive in the first place
+        $namespace = "root\sms\site_$siteCode"
     }
     Process
     {
-        if ($smBiosGUID){$null = Import-CMComputerInformation -CollectionName $CollectionName -ComputerName $computer -SMBiosGuid $smBiosGUID}
-        else{$null = Import-CMComputerInformation -CollectionName $CollectionName -ComputerName $computer -MacAddress $macAddress}
-        # Force collection updates.  Since the collection is limited by All Systems collection, it has to be in there first
-        $CollectionQueryAllS = Get-WmiObject -Namespace "Root\SMS\Site_$sitecode" -Class SMS_Collection -Filter "Name='All Systems'" -computername $siteserver
-        $null = $CollectionQueryAllS.RequestRefresh()
-        start-sleep 60
-
+        if ($smBiosGUID){$null = Import-ComputerObjectSCCM -computer $computer -siteserver $siteserver -CollectionName $CollectionName -siteCode $siteCode -smBiosGUID $smBiosGUID}
+        else{$null = Import-ComputerObjectSCCM -computer $computer -siteserver $siteserver -CollectionName $CollectionName -siteCode $siteCode -MacAddress $macAddress}
+        "Waiting for object to show up in collection"
         # Right now the lag on colleciton refresh is around 5 minutes, loop to wait until the computer object finally shows up in the collection
         # hour cap, after that .. error
         $count = 0
         do {
             start-sleep 60
             $count++
-            $device = Get-CMDevice -CollectionName $CollectionName -Name $computer 
+            $device = Get-WmiObject -Query "SELECT * FROM SMS_FullCollectionMembership WHERE CollectionID='SMS00001' AND name='$computer'" -ComputerName $siteserver -Namespace $namespace
+            "check $count"
         } while ($device -eq $null -and $count -lt 60)
-        if ($device -eq $null){Pop-Location;Throw "$computer never added to $CollectionName"}
+        if ($device -eq $null){Throw "$computer never added to All Systmes"}
+        "Found in All Systems, moving to $CollectionName"
+
+        # Force collection updates.  
+        $CollectionQueryAllS = Get-WmiObject -Namespace "Root\SMS\Site_$sitecode" -Class SMS_Collection -Filter "Name='$CollectionName'" -computername $siteserver
+        $null = $CollectionQueryAllS.RequestRefresh()
+        $colID = $CollectionQueryAllS.CollectionID
+        $count = 0
+        do {
+            start-sleep 60
+            $count++
+            $device = Get-WmiObject -Query "SELECT * FROM SMS_FullCollectionMembership WHERE CollectionID='$colID' AND name='$computer'" -ComputerName $siteserver -Namespace $namespace
+            "check $count"
+        } while ($device -eq $null -and $count -lt 60)
+        if ($device -eq $null){Throw "$computer never added to $CollectionName"}
         
     }
     End
     {
-        Pop-Location
     }
 }
 
@@ -228,7 +328,9 @@ function New-ComputerVariablesSCCM
 
         .PARAMETER sitecode
             SCCM Site Code
-    
+        
+        .PARAMETER smBiosGuid
+            An additional param to narrow down the computer object
         .EXAMPLE
             Example of how to use this cmdlet
     #>
@@ -240,38 +342,53 @@ function New-ComputerVariablesSCCM
         [string]$computer,
 
         [ValidateNotNullOrEmpty()]
-        [string]$CollectionName = "All Systems",
-
-        [ValidateNotNullOrEmpty()]
         [System.Collections.Hashtable]$deviceVariables,
+        
+        [ValidateNotNullOrEmpty()]
+        [string]$siteserver,
 
         [ValidateNotNullOrEmpty()]
-        [string] $sitecode
+        [string]$sitecode,
+
+        [string]$smBiosGUID
 
     )
 
     Begin
     {
-        Push-Location
-        Import-Module "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\ConfigurationManager.psd1" -Force
-        $location = $sitecode+":"
-        set-location $location # see wiki about creating the PS-Drive in the first place
+        $namespace = "root\sms\site_$siteCode"
     }
     Process
     {
-        $deviceID = (Get-CMDevice -CollectionName $CollectionName -Name $computer).ResourceID
-        if(-not($deviceID)){Pop-Location;throw "Unable to find $computer in $CollectionName"}
-        
-        foreach ($key in $deviceVariables.Keys)
+        try
         {
-            $null = New-CMDeviceVariable -DeviceID $deviceID -VariableName $key -VariableValue $deviceVariables[$key]
-            Write-Verbose "$key -- $($deviceVariables[$key])"
-        }
-        
+            $machineSettings = [WMIClass]"\\$siteserver\$namespace`:SMS_MachineSettings"
+            if ($smBiosGUID){$ResourceID = (Get-WmiObject -ComputerName $siteserver -Namespace $namespace -Query "SELECT * FROM SMS_R_System where Name='$computer' AND SMBIOSGUID='$smBiosGUID'").ResourceID}
+            else{$ResourceID = (Get-WmiObject -ComputerName $siteserver -Namespace $namespace -Query "SELECT * FROM SMS_R_System where Name='$computer'").ResourceID}
+            $object =  $machineSettings.CreateInstance()
+            $object.psbase.properties["ResourceID"].value = $ResourceID[0]
+            $object.psbase.properties["SourceSite"].value = $SiteCode
+
+            ForEach ($key in $deviceVariables.Keys){
+                $object.MachineVariables = $object.MachineVariables + [WMIClass]"\\$siteserver\$namespace`:SMS_MachineVariable"
+            }
+            $machineVariables =  $object.MachineVariables
+            $count = 0
+            ForEach ($key in $deviceVariables.Keys){
+                $machineVariables[$count].name = $key
+                $machineVariables[$count].value = $deviceVariables[$key]
+                $count++
+            }
+
+
+            $object.MachineVariables = $machineVariables
+
+            $object.put()
+        }catch{Throw ($_.Exception.Message + $_.InvocationInfo.Line + $_.InvocationInfo.PositionMessage)}
     }
     End
     {
-        Pop-Location
+
     }
 }
 
