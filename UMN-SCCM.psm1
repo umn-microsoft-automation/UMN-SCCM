@@ -298,6 +298,7 @@ function New-ComputerObjectSCCM
         do {
             start-sleep 60
             $count++
+            #if (($count % 5) -eq 0){"Refreshing $CollectionName";$null = $CollectionQueryAllS.RequestRefresh()}
             $device = Get-WmiObject -Query "SELECT * FROM SMS_FullCollectionMembership WHERE CollectionID='$colID' AND name='$computer'" -ComputerName $siteserver -Namespace $namespace
             "check $count"
         } while ($device -eq $null -and $count -lt 60)
