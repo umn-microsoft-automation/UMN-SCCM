@@ -14,6 +14,111 @@
 # You should have received a copy of the GNU General Public License
 # along with Foobar.  If not, see <http://www.gnu.org/licenses/>.
 ###
+#
+
+function Get-SccmCollectionByComputer{
+<#
+    .Synopsis
+        Get list of Collections a specific computer belongs to
+
+    .DESCRIPTION
+        Get list of Collections a specific computer belongs to
+
+    .PARAMETER computer
+        Name of computer to get Collections for
+
+    .PARAMETER siteserver
+        FQDN of the site server
+            
+    .PARAMETER sitecode
+        SCCM Site Code
+
+    .EXAMPLE
+        get-ClientMaintWindow -computer 'test-machine' -sitecode 'sccmsite'
+#>
+
+    [CmdletBinding()]
+    Param
+    (
+        [Parameter(Mandatory)]
+        [string]$computer,
+
+        [Parameter(Mandatory)]
+        [string]$siteserver,
+
+        [Parameter(Mandatory)]
+        [string]$sitecode
+
+    )
+
+    Begin{}
+    Process{
+        (Get-WmiObject -ComputerName $siteserver  -Namespace "root/SMS/site_$sitecode" -Query "SELECT SMS_Collection.* FROM SMS_FullCollectionMembership, SMS_Collection where name = '$computer' and SMS_FullCollectionMembership.CollectionID = SMS_Collection.CollectionID").Name
+    }
+    End{}
+}
+
+function Get-ClientMaintWindow{
+<#
+    .Synopsis
+        Requires SCCM PowerShell cmdlet to convert WMI class to readable schedule
+    .DESCRIPTION
+        Requires SCCM PowerShell cmdlet to convert WMI class to readable schedule
+
+    .PARAMETER computer
+        Name of computer object to be added
+
+    .PARAMETER sitecode
+        SCCM Site Code
+
+    .EXAMPLE
+        get-ClientMaintWindow -computer 'test-machine' -sitecode 'sccmsite'
+#>
+
+    [CmdletBinding()]
+    Param
+    (
+        [Parameter(Mandatory)]
+        [string]$computer,
+
+        [Parameter(Mandatory)]
+        [string]$sitecode
+
+    )
+ 
+    Begin
+    {
+        $Future = @()
+        $location = $sitecode+":"
+        Import-Module "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\ConfigurationManager.psd1" -Force
+        Push-Location
+        set-location $location # see wiki about creating the PS-Drive in the first place
+
+    }   
+
+    Process
+    {
+        Get-WmiObject -query "SELECT * FROM CCM_ServiceWindow " -namespace "root\CCM\Policy\Machine\ActualConfig" -ComputerName $computer
+        If ($wmiClass -eq $Null){throw "$VM WMI call failed"}
+
+        Push-Location
+        set-location $location # see wiki about creating the PS-Drive in the first place
+
+        $wmiClass.schedules | % {
+            $MaintWindow = Convert-CMSchedule -ScheduleString $_
+            If ($MaintWindow.Starttime -ge (get-date)){$Future += $MaintWindow}
+        }
+    } 
+       
+    End
+    {
+    
+        If ($Future -eq $Null) {Pop-Location;throw "$vm has no future mainteanance windows"}
+        Else {$Future |Select-Object -Property HourDuration,StartTime}
+        Pop-Location
+    }
+}
+
 function Get-CMDeploymentTypePath {
     <#
         .SYNOPSIS
@@ -391,67 +496,7 @@ function New-ComputerVariablesSCCM
     }
 }
 
-function get-ClientMaintWindow
-{
-    <#
-        .Synopsis
-            Requires SCCM PowerShell cmdlet to convert WMI class to readable schedule
-        .DESCRIPTION
-            Requires SCCM PowerShell cmdlet to convert WMI class to readable schedule
 
-        .PARAMETER computer
-            Name of computer object to be added
-
-        .PARAMETER sitecode
-            SCCM Site Code
-
-        .EXAMPLE
-            get-ClientMaintWindow -computer 'test-machine' -sitecode 'sccmsite'
-    #>
-
-    [CmdletBinding()]
-    Param
-    (
-        [Parameter(Mandatory)]
-        [string]$computer,
-
-        [Parameter(Mandatory)]
-        [string]$sitecode
-
-    )
- 
-    Begin
-    {
-        $Future = @()
-        $location = $sitecode+":"
-        Import-Module "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\ConfigurationManager.psd1" -Force
-        Push-Location
-        set-location $location # see wiki about creating the PS-Drive in the first place
-
-    }   
-
-    Process
-    {
-        Get-WmiObject -query "SELECT * FROM CCM_ServiceWindow " -namespace "root\CCM\Policy\Machine\ActualConfig" -ComputerName $computer
-        If ($wmiClass -eq $Null){throw "$VM WMI call failed"}
-
-        Push-Location
-        set-location $location # see wiki about creating the PS-Drive in the first place
-
-        $wmiClass.schedules | % {
-            $MaintWindow = Convert-CMSchedule -ScheduleString $_
-            If ($MaintWindow.Starttime -ge (get-date)){$Future += $MaintWindow}
-        }
-    } 
-       
-    End
-    {
-    
-        If ($Future -eq $Null) {Pop-Location;throw "$vm has no future mainteanance windows"}
-        Else {$Future |Select-Object -Property HourDuration,StartTime}
-        Pop-Location
-    }
-}
 
 function Remove-sccmDevice
 {
