@@ -98,7 +98,7 @@ function Get-ClientMaintWindow{
 
     Process
     {
-        Get-WmiObject -query "SELECT * FROM CCM_ServiceWindow " -namespace "root\CCM\Policy\Machine\ActualConfig" -ComputerName $computer
+        $wmiClass = Get-WmiObject -query "SELECT * FROM CCM_ServiceWindow " -namespace "root\CCM\Policy\Machine\ActualConfig" -ComputerName $computer
         If ($wmiClass -eq $Null){throw "$VM WMI call failed"}
 
         Push-Location
