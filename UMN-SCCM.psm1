@@ -123,13 +123,12 @@ function Get-CMcollectionmembers
 {
 <#
     .Synopsis
-        Short description
+        List individual members of a collection
     .DESCRIPTION
-        Long description
+        Uses CIM instance to return name of servers in a collection 
     .EXAMPLE
-        Example of how to use this cmdlet
-    .EXAMPLE
-        Another example of how to use this cmdlet
+       Get-CMcollectionmembers -siteserver oit-cm-sitesrv -sitecode UM3 -collectionName oit-cds-servers
+   
     .PARAMETER collectionName
         Name of SCCM Collection
     .PARAMETER siteserver
@@ -150,8 +149,10 @@ function Get-CMcollectionmembers
         [Parameter(Mandatory)]
         [string]$sitecode
     )
-    
-    $SMSCollectionMCN = Get-CimInstance -ComputerName $siteserver -namespace "root/SMS/site_$sitecode"  -ClassName SMS_Collection -Filter 'Name="$collectionname"'|select memberclassname
+
+
+
+    $SMSCollectionMCN = Get-CimInstance -ComputerName $siteserver -namespace "root/SMS/site_$sitecode"  -ClassName SMS_Collection -Filter "Name = '$collectionname'"|select -ExpandProperty memberclassname 
     Get-CimInstance -ComputerName $siteserver -namespace "root/SMS/site_$sitecode"  -ClassName  $SMSCollectionMCN | Select-Object -ExpandProperty name
 
 }
@@ -207,13 +208,13 @@ function Get-CMUpdatesPending
 {
 <#
     .Synopsis
-        Short description
+         List updates pending on a particular server
     .DESCRIPTION
-        Long description
+        Uses CIM to query what patches the SCCM client knows to be pending .
     .EXAMPLE
-        Example of how to use this cmdlet
+        Get-CMUpdatesPending OIT-Kjm-02| select name
     .EXAMPLE
-        Another example of how to use this cmdlet
+        (Get-CMUpdatesPending OIT-Kjm-02).count
     .PARAMETER computername
         name of computer object
 #>
@@ -386,14 +387,12 @@ function Install-CMupdates
 {
 <#
     .Synopsis
-        Short description
+        Installs pending updates on a targeted server.
     .DESCRIPTION
-        Long description
+        Uses WMI calls to initiate updates pending in the CM client. Logs to public\downloads by default.Does not reboot. 
     .EXAMPLE
-        Example of how to use this cmdlet
-    .EXAMPLE
-        Another example of how to use this cmdlet
-    .PARAMETER computername
+         install-cmupdates oit-kjm-02
+       .PARAMETER computername
         name of computer object
 #>
     [CmdletBinding()]
@@ -439,13 +438,13 @@ function Install-CMupdatesByCollection
 {
 <#
     .Synopsis
-        Short description
+       Install all pending updates on a set of computers.
     .DESCRIPTION
-        Long description
+        Queries SCCM collection to obtain list of servers and then uses WMI to initiate pending SCCM delivered updates on each computer. 
+        Logs to public\downloads by default.Does not reboot. 
     .EXAMPLE
-        Example of how to use this cmdlet
-    .EXAMPLE
-        Another example of how to use this cmdlet
+         Install-CMupdatesByCollection -collectionName oitserverkjmtesting -siteserver oit-cm-sitesrv -sitecode UM3
+  
     .PARAMETER collectionName
         Name of SCCM Collection
     .PARAMETER siteserver
