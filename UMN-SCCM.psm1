@@ -119,6 +119,43 @@ function Get-ClientMaintWindow{
     }
 }
 
+function Get-CMcollectionmembers
+{
+<#
+    .Synopsis
+        Short description
+    .DESCRIPTION
+        Long description
+    .EXAMPLE
+        Example of how to use this cmdlet
+    .EXAMPLE
+        Another example of how to use this cmdlet
+    .PARAMETER collectionName
+        Name of SCCM Collection
+    .PARAMETER siteserver
+        fqdn of siteserver
+    .PARAMETER sitecode
+        sitecode for SCCM Instance
+#>
+    
+    [CmdletBinding()]
+    param
+    (
+        [Parameter(Mandatory)]
+        [string]$collectionName,
+
+        [Parameter(Mandatory)]
+        [string]$siteserver,
+
+        [Parameter(Mandatory)]
+        [string]$sitecode
+    )
+    
+    $SMSCollectionMCN = Get-CimInstance -ComputerName $siteserver -namespace "root/SMS/site_$sitecode"  -ClassName SMS_Collection -Filter 'Name="$collectionname"'|select memberclassname
+    Get-CimInstance -ComputerName $siteserver -namespace "root/SMS/site_$sitecode"  -ClassName  $SMSCollectionMCN | Select-Object -ExpandProperty name
+
+}
+
 function Get-CMDeploymentTypePath {
     <#
         .SYNOPSIS
@@ -168,18 +205,7 @@ function Get-CMDeploymentTypePath {
 
 function Get-CMUpdatesPending
 {
-<#
-    .Synopsis
-        Short description
-    .DESCRIPTION
-        Long description
-    .EXAMPLE
-        Example of how to use this cmdlet
-    .EXAMPLE
-        Another example of how to use this cmdlet
-    .PARAMETER computername
-        Name of computer object
-#>
+
     [CmdletBinding()]
     param 
     (
