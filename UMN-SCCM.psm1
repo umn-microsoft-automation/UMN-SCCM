@@ -273,7 +273,6 @@ function Import-ComputerObjectSCCM
         [Parameter(ParameterSetName='mac')][ValidatePattern("([a-zA-Z0-9]{2}:){5}[a-zA-Z0-9]{2}")]
         [string]$macAddress,
 
-        [ValidateNotNullOrEmpty()]
         [string]$CollectionName,
 
         [ValidateNotNullOrEmpty()]
@@ -287,12 +286,8 @@ function Import-ComputerObjectSCCM
     }
     Process
     {
-        # validate Collection name
-        if ((Get-WmiObject -Query "SELECT * FROM SMS_Collection WHERE CollectionType = 2 AND Name='$CollectionName'" -ComputerName $siteserver -Namespace $namespace) -eq $null){throw "Error -- unable to find collection"}
-        ## validate device doesn't already exist, we don't want to over-write
+         ## validate device doesn't already exist, we don't want to over-write
         if ((Get-WmiObject -Query "SELECT * FROM SMS_R_System WHERE Name = '$computer'" -ComputerName $siteserver -Namespace $namespace) -ne $null){throw "machine already exits in sccm"}
-
-        $CollectionQuery = Get-WmiObject -Namespace $namespace -Class 'SMS_Collection' -Filter "Name='$CollectionName'" -ComputerName $siteserver
 
         # New computer account information
         $WMIConnection = ([WMIClass]"\\$siteserver\$namespace`:SMS_Site")
@@ -303,14 +298,20 @@ function Import-ComputerObjectSCCM
         $NewEntry.OverwriteExistingRecord = $True
         $Resource = $WMIConnection.psbase.InvokeMethod("ImportMachineEntry",$NewEntry,$null)
 
-        #Create the Direct MemberShip Rule
-        $NewRule = ([WMIClass]"\\$siteserver\$namespace`:SMS_CollectionRuleDirect").CreateInstance()
-        $NewRule.ResourceClassName = "SMS_R_SYSTEM"
-        $NewRule.ResourceID = $Resource.ResourceID
-        $NewRule.Rulename = $computer
+        if($CollectionName)
+        {
+            # validate Collection name
+            if ((Get-WmiObject -Query "SELECT * FROM SMS_Collection WHERE CollectionType = 2 AND Name='$CollectionName'" -ComputerName $siteserver -Namespace $namespace) -eq $null){throw "Error -- unable to find collection"}
+            #Create the Direct MemberShip Rule
+            $NewRule = ([WMIClass]"\\$siteserver\$namespace`:SMS_CollectionRuleDirect").CreateInstance()
+            $NewRule.ResourceClassName = "SMS_R_SYSTEM"
+            $NewRule.ResourceID = $Resource.ResourceID
+            $NewRule.Rulename = $computer
 
-        #Add the newly created machine to collection
-        $null = $CollectionQuery.AddMemberShipRule($NewRule)
+            #Add the newly created machine to collection
+            $CollectionQuery = Get-WmiObject -Namespace $namespace -Class 'SMS_Collection' -Filter "Name='$CollectionName'" -ComputerName $siteserver
+            $null = $CollectionQuery.AddMemberShipRule($NewRule)
+        }
 
         return $Resource
         
@@ -366,7 +367,6 @@ function New-ComputerObjectSCCM
         [Parameter(ParameterSetName='mac')][ValidatePattern("([a-zA-Z0-9]{2}:){5}[a-zA-Z0-9]{2}")]
         [string]$macAddress,
 
-        [ValidateNotNullOrEmpty()]
         [string]$CollectionName,
 
         [ValidateNotNullOrEmpty()]
@@ -382,33 +382,36 @@ function New-ComputerObjectSCCM
     {
         if ($smBiosGUID){$null = Import-ComputerObjectSCCM -computer $computer -siteserver $siteserver -CollectionName $CollectionName -siteCode $siteCode -smBiosGUID $smBiosGUID}
         else{$null = Import-ComputerObjectSCCM -computer $computer -siteserver $siteserver -CollectionName $CollectionName -siteCode $siteCode -MacAddress $macAddress}
-        "Waiting for object to show up in collection"
-        # Right now the lag on colleciton refresh is around 5 minutes, loop to wait until the computer object finally shows up in the collection
-        # hour cap, after that .. error
-        $count = 0
-        do {
+        
+        if ($CollectionName)
+        {
+            "Waiting for object to show up in collection"
+            # Right now the lag on colleciton refresh is around 5 minutes, loop to wait until the computer object finally shows up in the collection
+            # hour cap, after that .. error
+            $count = 0
+                                do {
             start-sleep 60
             $count++
             $device = Get-WmiObject -Query "SELECT * FROM SMS_FullCollectionMembership WHERE CollectionID='SMS00001' AND name='$computer'" -ComputerName $siteserver -Namespace $namespace
             "check $count"
         } while ($device -eq $null -and $count -lt 60)
-        if ($device -eq $null){Throw "$computer never added to All Systmes"}
-        "Found in All Systems, moving to $CollectionName"
+            if ($device -eq $null){Throw "$computer never added to All Systmes"}
+            "Found in All Systems, moving to $CollectionName"
 
-        # Force collection updates.  
-        $CollectionQueryAllS = Get-WmiObject -Namespace "Root\SMS\Site_$sitecode" -Class SMS_Collection -Filter "Name='$CollectionName'" -computername $siteserver
-        $null = $CollectionQueryAllS.RequestRefresh()
-        $colID = $CollectionQueryAllS.CollectionID
-        $count = 0
-        do {
+            # Force collection updates.  
+            $CollectionQueryAllS = Get-WmiObject -Namespace "Root\SMS\Site_$sitecode" -Class SMS_Collection -Filter "Name='$CollectionName'" -computername $siteserver
+            $null = $CollectionQueryAllS.RequestRefresh()
+            $colID = $CollectionQueryAllS.CollectionID
+            $count = 0
+                                    do {
             start-sleep 60
             $count++
             #if (($count % 5) -eq 0){"Refreshing $CollectionName";$null = $CollectionQueryAllS.RequestRefresh()}
             $device = Get-WmiObject -Query "SELECT * FROM SMS_FullCollectionMembership WHERE CollectionID='$colID' AND name='$computer'" -ComputerName $siteserver -Namespace $namespace
             "check $count"
         } while ($device -eq $null -and $count -lt 60)
-        if ($device -eq $null){Throw "$computer never added to $CollectionName"}
-        
+            if ($device -eq $null){Throw "$computer never added to $CollectionName"}
+        }
     }
     End
     {
