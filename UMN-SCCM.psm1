@@ -166,6 +166,30 @@ function Get-CMDeploymentTypePath {
 	}
 }
 
+function Get-CMUpdatesPending
+{
+<#
+    .Synopsis
+        Short description
+    .DESCRIPTION
+        Long description
+    .EXAMPLE
+        Example of how to use this cmdlet
+    .EXAMPLE
+        Another example of how to use this cmdlet
+    .PARAMETER computername
+        Name of computer object
+#>
+    [CmdletBinding()]
+    param 
+    (
+        [Parameter(Mandatory)]
+        [string]$computername
+    )
+    
+    Get-CimInstance -computername $computername -namespace root\ccm\clientsdk -query 'Select * from CCM_SoftwareUpdate'    
+}
+
 function Get-PendingReboot {
 	<#
 		.SYNOPSIS
