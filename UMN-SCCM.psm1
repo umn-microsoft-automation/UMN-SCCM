@@ -435,6 +435,79 @@ function Install-CMupdates
         else {"$computername,Unable to connect to remote system ,please check further" | Out-File $log -append }
 }
 
+function Install-CMupdatesByCollection
+{
+<#
+    .Synopsis
+        Short description
+    .DESCRIPTION
+        Long description
+    .EXAMPLE
+        Example of how to use this cmdlet
+    .EXAMPLE
+        Another example of how to use this cmdlet
+    .PARAMETER collectionName
+        Name of SCCM Collection
+    .PARAMETER siteserver
+        fqdn of siteserver
+    .PARAMETER sitecode
+        sitecode for SCCM Instance
+    .PARAMETERScriptDir
+#>
+    param
+    (
+        [Parameter(Mandatory)]
+        [string]$CollectionName,
+
+        [Parameter(Mandatory)]
+        [string]$siteserver,
+
+        [Parameter(Mandatory)]
+        [string]$sitecode,
+
+        [string]$ScriptDir = 'c:\users\public\downloads'
+    )
+
+    Begin{
+        # Determine script location
+        $log      = "$ScriptDir\InstallUpdates.log"
+        $date     = Get-Date -Format "dd-MM-yyyy hh:mm:ss"
+        # Get list of clients from CM collection
+    }
+
+    Process{
+        $list = get-CMcollectionmembers -collectionName $collectionName -sitecode $sitecode -siteserver $siteserver
+
+        ForEach ($computername in $list)
+        {
+                $wmicheck=$null
+            $wmicheck =Get-WmiObject -ComputerName $computername -namespace root\cimv2 -Class Win32_BIOS -ErrorAction SilentlyContinue
+            if ($wmicheck)
+            {
+            # Get list of all instances of CCM_SoftwareUpdate from root\CCM\ClientSDK for missing updates https://msdn.microsoft.com/en-us/library/jj155450.aspx?f=255&MSPPError=-2147217396
+            $TargetedUpdates= Get-WmiObject -ComputerName $computername -Namespace root\CCM\ClientSDK -Class CCM_SoftwareUpdate -Filter ComplianceState=0
+            $approvedUpdates= ($TargetedUpdates |Measure-Object).count
+            $pendingpatches=($TargetedUpdates |Where-Object {$TargetedUpdates.EvaluationState -ne 8} |Measure-Object).count
+            $rebootpending=($TargetedUpdates |Where-Object {$TargetedUpdates.EvaluationState -eq 8} |Measure-Object).count
+            if ($pendingpatches -gt 0) 
+            {
+              try {
+	            $MissingUpdatesReformatted = @($TargetedUpdates | ForEach-Object {if($_.ComplianceState -eq 0){[WMI]$_.__PATH}}) 
+	            # The following is the invoke of the CCM_SoftwareUpdatesManager.InstallUpdates with our found updates 
+	            $InstallReturn = Invoke-WmiMethod -ComputerName $computername -Class CCM_SoftwareUpdatesManager -Name InstallUpdates -ArgumentList (,$MissingUpdatesReformatted) -Namespace root\ccm\clientsdk 
+	            "$computername,Targeted Patches :$approvedUpdates,Pending patches:$pendingpatches,Reboot Pending patches :$rebootpending,initiated $pendingpatches patches for install"  | Out-File $log -append
+	              }
+	        catch {"$computername,pending patches - $pendingpatches but unable to install them ,please check Further" | Out-File $log -append }
+            }
+            else {"$computername,Targeted Patches :$approvedUpdates,Pending patches:$pendingpatches,Reboot Pending patches :$rebootpending,Compliant" | Out-File $log -append }
+            }
+            else {"$computername,Unable to connect to remote system ,please check further" | Out-File $log -append }
+
+        }
+    }
+    End{}
+}
+
 function New-ComputerObjectSCCM
 {
     <#
@@ -612,8 +685,6 @@ function New-ComputerVariablesSCCM
 
     }
 }
-
-
 
 function Remove-sccmDevice
 {
