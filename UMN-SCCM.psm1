@@ -119,6 +119,44 @@ function Get-ClientMaintWindow{
     }
 }
 
+function Get-CMcollectionmembers
+{
+<#
+    .Synopsis
+        List individual members of a collection
+    .DESCRIPTION
+        Uses CIM instance to return name of servers in a collection 
+    .EXAMPLE
+       Get-CMcollectionmembers -siteserver oit-cm-sitesrv -sitecode UM3 -collectionName oit-cds-servers
+   
+    .PARAMETER collectionName
+        Name of SCCM Collection
+    .PARAMETER siteserver
+        fqdn of siteserver
+    .PARAMETER sitecode
+        sitecode for SCCM Instance
+#>
+    
+    [CmdletBinding()]
+    param
+    (
+        [Parameter(Mandatory)]
+        [string]$collectionName,
+
+        [Parameter(Mandatory)]
+        [string]$siteserver,
+
+        [Parameter(Mandatory)]
+        [string]$sitecode
+    )
+
+
+
+    $SMSCollectionMCN = Get-CimInstance -ComputerName $siteserver -namespace "root/SMS/site_$sitecode"  -ClassName SMS_Collection -Filter "Name = '$collectionname'"|select -ExpandProperty memberclassname 
+    Get-CimInstance -ComputerName $siteserver -namespace "root/SMS/site_$sitecode"  -ClassName  $SMSCollectionMCN | Select-Object -ExpandProperty name
+
+}
+
 function Get-CMDeploymentTypePath {
     <#
         .SYNOPSIS
@@ -164,6 +202,30 @@ function Get-CMDeploymentTypePath {
 	end {
 		return $ReturnObject
 	}
+}
+
+function Get-CMUpdatesPending
+{
+<#
+    .Synopsis
+         List updates pending on a particular server
+    .DESCRIPTION
+        Uses CIM to query what patches the SCCM client knows to be pending .
+    .EXAMPLE
+        Get-CMUpdatesPending OIT-Kjm-02| select name
+    .EXAMPLE
+        (Get-CMUpdatesPending OIT-Kjm-02).count
+    .PARAMETER computername
+        name of computer object
+#>
+    [CmdletBinding()]
+    param 
+    (
+        [Parameter(Mandatory)]
+        [string]$computername
+    )
+    
+    Get-CimInstance -computername $computername -namespace root\ccm\clientsdk -query 'Select * from CCM_SoftwareUpdate'    
 }
 
 function Get-PendingReboot {
@@ -273,7 +335,6 @@ function Import-ComputerObjectSCCM
         [Parameter(ParameterSetName='mac')][ValidatePattern("([a-zA-Z0-9]{2}:){5}[a-zA-Z0-9]{2}")]
         [string]$macAddress,
 
-        [ValidateNotNullOrEmpty()]
         [string]$CollectionName,
 
         [ValidateNotNullOrEmpty()]
@@ -287,12 +348,8 @@ function Import-ComputerObjectSCCM
     }
     Process
     {
-        # validate Collection name
-        if ((Get-WmiObject -Query "SELECT * FROM SMS_Collection WHERE CollectionType = 2 AND Name='$CollectionName'" -ComputerName $siteserver -Namespace $namespace) -eq $null){throw "Error -- unable to find collection"}
-        ## validate device doesn't already exist, we don't want to over-write
+         ## validate device doesn't already exist, we don't want to over-write
         if ((Get-WmiObject -Query "SELECT * FROM SMS_R_System WHERE Name = '$computer'" -ComputerName $siteserver -Namespace $namespace) -ne $null){throw "machine already exits in sccm"}
-
-        $CollectionQuery = Get-WmiObject -Namespace $namespace -Class 'SMS_Collection' -Filter "Name='$CollectionName'" -ComputerName $siteserver
 
         # New computer account information
         $WMIConnection = ([WMIClass]"\\$siteserver\$namespace`:SMS_Site")
@@ -303,14 +360,20 @@ function Import-ComputerObjectSCCM
         $NewEntry.OverwriteExistingRecord = $True
         $Resource = $WMIConnection.psbase.InvokeMethod("ImportMachineEntry",$NewEntry,$null)
 
-        #Create the Direct MemberShip Rule
-        $NewRule = ([WMIClass]"\\$siteserver\$namespace`:SMS_CollectionRuleDirect").CreateInstance()
-        $NewRule.ResourceClassName = "SMS_R_SYSTEM"
-        $NewRule.ResourceID = $Resource.ResourceID
-        $NewRule.Rulename = $computer
+        if($CollectionName)
+        {
+            # validate Collection name
+            if ((Get-WmiObject -Query "SELECT * FROM SMS_Collection WHERE CollectionType = 2 AND Name='$CollectionName'" -ComputerName $siteserver -Namespace $namespace) -eq $null){throw "Error -- unable to find collection"}
+            #Create the Direct MemberShip Rule
+            $NewRule = ([WMIClass]"\\$siteserver\$namespace`:SMS_CollectionRuleDirect").CreateInstance()
+            $NewRule.ResourceClassName = "SMS_R_SYSTEM"
+            $NewRule.ResourceID = $Resource.ResourceID
+            $NewRule.Rulename = $computer
 
-        #Add the newly created machine to collection
-        $null = $CollectionQuery.AddMemberShipRule($NewRule)
+            #Add the newly created machine to collection
+            $CollectionQuery = Get-WmiObject -Namespace $namespace -Class 'SMS_Collection' -Filter "Name='$CollectionName'" -ComputerName $siteserver
+            $null = $CollectionQuery.AddMemberShipRule($NewRule)
+        }
 
         return $Resource
         
@@ -318,6 +381,130 @@ function Import-ComputerObjectSCCM
     End
     {
     }
+}
+
+function Install-CMupdates
+{
+<#
+    .Synopsis
+        Installs pending updates on a targeted server.
+    .DESCRIPTION
+        Uses WMI calls to initiate updates pending in the CM client. Logs to public\downloads by default.Does not reboot. 
+    .EXAMPLE
+         install-cmupdates oit-kjm-02
+       .PARAMETER computername
+        name of computer object
+#>
+    [CmdletBinding()]
+    param 
+    (
+        [Parameter(Mandatory)]
+        [string]$computername,
+
+        [string]$ScriptDir = 'c:\users\public\downloads'
+    )
+
+    # Props for this section to Eswar Koneti, original script  https://gallery.technet.microsoft.com/SCCM-Configmgr-Powershell-ebbb2c0e
+
+    # Determine script location
+        $log      = "$ScriptDir\InstallUpdates.log"
+        $date     = Get-Date -Format "dd-MM-yyyy hh:mm:ss"
+    #check wmi   
+        $wmicheck=$null
+        $wmicheck =Get-WmiObject -ComputerName $computername -namespace root\cimv2 -Class Win32_BIOS -ErrorAction SilentlyContinue
+        if ($wmicheck)
+        {
+    # Get list of all instances of CCM_SoftwareUpdate from root\CCM\ClientSDK for missing updates https://msdn.microsoft.com/en-us/library/jj155450.aspx?f=255&MSPPError=-2147217396
+        $TargetedUpdates= Get-WmiObject -ComputerName $computername -Namespace root\CCM\ClientSDK -Class CCM_SoftwareUpdate -Filter ComplianceState=0
+        $approvedUpdates= ($TargetedUpdates |Measure-Object).count
+        $pendingpatches=($TargetedUpdates |Where-Object {$TargetedUpdates.EvaluationState -ne 8} |Measure-Object).count
+        $rebootpending=($TargetedUpdates |Where-Object {$TargetedUpdates.EvaluationState -eq 8} |Measure-Object).count
+        if ($pendingpatches -gt 0) 
+        {
+          try {
+	        $MissingUpdatesReformatted = @($TargetedUpdates | ForEach-Object {if($_.ComplianceState -eq 0){[WMI]$_.__PATH}}) 
+	        # The following is the invoke of the CCM_SoftwareUpdatesManager.InstallUpdates with our found updates 
+	        $InstallReturn = Invoke-WmiMethod -ComputerName $computername -Class CCM_SoftwareUpdatesManager -Name InstallUpdates -ArgumentList (,$MissingUpdatesReformatted) -Namespace root\ccm\clientsdk 
+	        "$computername,Targeted Patches :$approvedUpdates,Pending patches:$pendingpatches,Reboot Pending patches :$rebootpending,initiated $pendingpatches patches for install"  | Out-File $log -append
+	          }
+	        catch {"$computername,pending patches - $pendingpatches but unable to install them ,please check Further" | Out-File $log -append }
+        }
+        else {"$computername,Targeted Patches :$approvedUpdates,Pending patches:$pendingpatches,Reboot Pending patches :$rebootpending,Compliant" | Out-File $log -append }
+        }
+        else {"$computername,Unable to connect to remote system ,please check further" | Out-File $log -append }
+}
+
+function Install-CMupdatesByCollection
+{
+<#
+    .Synopsis
+       Install all pending updates on a set of computers.
+    .DESCRIPTION
+        Queries SCCM collection to obtain list of servers and then uses WMI to initiate pending SCCM delivered updates on each computer. 
+        Logs to public\downloads by default.Does not reboot. 
+    .EXAMPLE
+         Install-CMupdatesByCollection -collectionName oitserverkjmtesting -siteserver oit-cm-sitesrv -sitecode UM3
+  
+    .PARAMETER collectionName
+        Name of SCCM Collection
+    .PARAMETER siteserver
+        fqdn of siteserver
+    .PARAMETER sitecode
+        sitecode for SCCM Instance
+    .PARAMETERScriptDir
+#>
+    param
+    (
+        [Parameter(Mandatory)]
+        [string]$CollectionName,
+
+        [Parameter(Mandatory)]
+        [string]$siteserver,
+
+        [Parameter(Mandatory)]
+        [string]$sitecode,
+
+        [string]$ScriptDir = 'c:\users\public\downloads'
+    )
+
+    Begin{
+        # Determine script location
+        $log      = "$ScriptDir\InstallUpdates.log"
+        $date     = Get-Date -Format "dd-MM-yyyy hh:mm:ss"
+        # Get list of clients from CM collection
+    }
+
+    Process{
+        $list = get-CMcollectionmembers -collectionName $collectionName -sitecode $sitecode -siteserver $siteserver
+
+        ForEach ($computername in $list)
+        {
+                $wmicheck=$null
+            $wmicheck =Get-WmiObject -ComputerName $computername -namespace root\cimv2 -Class Win32_BIOS -ErrorAction SilentlyContinue
+            if ($wmicheck)
+            {
+            # Get list of all instances of CCM_SoftwareUpdate from root\CCM\ClientSDK for missing updates https://msdn.microsoft.com/en-us/library/jj155450.aspx?f=255&MSPPError=-2147217396
+            $TargetedUpdates= Get-WmiObject -ComputerName $computername -Namespace root\CCM\ClientSDK -Class CCM_SoftwareUpdate -Filter ComplianceState=0
+            $approvedUpdates= ($TargetedUpdates |Measure-Object).count
+            $pendingpatches=($TargetedUpdates |Where-Object {$TargetedUpdates.EvaluationState -ne 8} |Measure-Object).count
+            $rebootpending=($TargetedUpdates |Where-Object {$TargetedUpdates.EvaluationState -eq 8} |Measure-Object).count
+            if ($pendingpatches -gt 0) 
+            {
+              try {
+	            $MissingUpdatesReformatted = @($TargetedUpdates | ForEach-Object {if($_.ComplianceState -eq 0){[WMI]$_.__PATH}}) 
+	            # The following is the invoke of the CCM_SoftwareUpdatesManager.InstallUpdates with our found updates 
+	            $InstallReturn = Invoke-WmiMethod -ComputerName $computername -Class CCM_SoftwareUpdatesManager -Name InstallUpdates -ArgumentList (,$MissingUpdatesReformatted) -Namespace root\ccm\clientsdk 
+	            "$computername,Targeted Patches :$approvedUpdates,Pending patches:$pendingpatches,Reboot Pending patches :$rebootpending,initiated $pendingpatches patches for install"  | Out-File $log -append
+	              }
+	        catch {"$computername,pending patches - $pendingpatches but unable to install them ,please check Further" | Out-File $log -append }
+            }
+            else {"$computername,Targeted Patches :$approvedUpdates,Pending patches:$pendingpatches,Reboot Pending patches :$rebootpending,Compliant" | Out-File $log -append }
+            }
+            else {"$computername,Unable to connect to remote system ,please check further" | Out-File $log -append }
+
+        }
+    }
+    End{}
 }
 
 function New-ComputerObjectSCCM
@@ -366,7 +553,6 @@ function New-ComputerObjectSCCM
         [Parameter(ParameterSetName='mac')][ValidatePattern("([a-zA-Z0-9]{2}:){5}[a-zA-Z0-9]{2}")]
         [string]$macAddress,
 
-        [ValidateNotNullOrEmpty()]
         [string]$CollectionName,
 
         [ValidateNotNullOrEmpty()]
@@ -382,33 +568,36 @@ function New-ComputerObjectSCCM
     {
         if ($smBiosGUID){$null = Import-ComputerObjectSCCM -computer $computer -siteserver $siteserver -CollectionName $CollectionName -siteCode $siteCode -smBiosGUID $smBiosGUID}
         else{$null = Import-ComputerObjectSCCM -computer $computer -siteserver $siteserver -CollectionName $CollectionName -siteCode $siteCode -MacAddress $macAddress}
-        "Waiting for object to show up in collection"
-        # Right now the lag on colleciton refresh is around 5 minutes, loop to wait until the computer object finally shows up in the collection
-        # hour cap, after that .. error
-        $count = 0
-        do {
+        
+        if ($CollectionName)
+        {
+            "Waiting for object to show up in collection"
+            # Right now the lag on colleciton refresh is around 5 minutes, loop to wait until the computer object finally shows up in the collection
+            # hour cap, after that .. error
+            $count = 0
+                                do {
             start-sleep 60
             $count++
             $device = Get-WmiObject -Query "SELECT * FROM SMS_FullCollectionMembership WHERE CollectionID='SMS00001' AND name='$computer'" -ComputerName $siteserver -Namespace $namespace
             "check $count"
         } while ($device -eq $null -and $count -lt 60)
-        if ($device -eq $null){Throw "$computer never added to All Systmes"}
-        "Found in All Systems, moving to $CollectionName"
+            if ($device -eq $null){Throw "$computer never added to All Systmes"}
+            "Found in All Systems, moving to $CollectionName"
 
-        # Force collection updates.  
-        $CollectionQueryAllS = Get-WmiObject -Namespace "Root\SMS\Site_$sitecode" -Class SMS_Collection -Filter "Name='$CollectionName'" -computername $siteserver
-        $null = $CollectionQueryAllS.RequestRefresh()
-        $colID = $CollectionQueryAllS.CollectionID
-        $count = 0
-        do {
+            # Force collection updates.  
+            $CollectionQueryAllS = Get-WmiObject -Namespace "Root\SMS\Site_$sitecode" -Class SMS_Collection -Filter "Name='$CollectionName'" -computername $siteserver
+            $null = $CollectionQueryAllS.RequestRefresh()
+            $colID = $CollectionQueryAllS.CollectionID
+            $count = 0
+                                    do {
             start-sleep 60
             $count++
             #if (($count % 5) -eq 0){"Refreshing $CollectionName";$null = $CollectionQueryAllS.RequestRefresh()}
             $device = Get-WmiObject -Query "SELECT * FROM SMS_FullCollectionMembership WHERE CollectionID='$colID' AND name='$computer'" -ComputerName $siteserver -Namespace $namespace
             "check $count"
         } while ($device -eq $null -and $count -lt 60)
-        if ($device -eq $null){Throw "$computer never added to $CollectionName"}
-        
+            if ($device -eq $null){Throw "$computer never added to $CollectionName"}
+        }
     }
     End
     {
@@ -495,8 +684,6 @@ function New-ComputerVariablesSCCM
 
     }
 }
-
-
 
 function Remove-sccmDevice
 {
